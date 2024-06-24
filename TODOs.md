@@ -2,7 +2,7 @@
 ## TODOs
 
 * Pin the versions
-
+* Ulimately want to add a frontend (web service/page) and deployment step
 
 ## Certificate Issues (venv related?)
 For some reason my certificates are out-of-date in this venv, so install `certifi` then export:
@@ -37,6 +37,11 @@ verifying SSL connections.
 
 * [Groq](https://console.groq.com/keys:
   * Run in the cloud on LPUs
+
+* [Ollama](https://github.com/ollama/ollama)
+  * API to a range of open-source LLMs. Ollama supports a list of models available on https://ollama.com/library
+  * Run locally
+  * [Ollama Python Library](https://github.com/ollama/ollama-python)
 
 
 ### Nested asyncio Event Loop Uses

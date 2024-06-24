@@ -12,6 +12,7 @@ dependencies = [
   "langchain",
   "langchain-community",
   "llama-parse",
+  "ollama",
   "fastembed",
   "chromadb",
   "python-dotenv",

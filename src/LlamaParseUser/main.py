@@ -1,6 +1,7 @@
 """ Parse pdf and feed into an LLM
 """
 import os
+import time
 from pathlib import Path
 
 import joblib
@@ -9,6 +10,7 @@ from langchain.prompts import PromptTemplate
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain_community.document_loaders import DirectoryLoader, UnstructuredMarkdownLoader
 from langchain_community.embeddings.fastembed import FastEmbedEmbeddings
+from langchain_community.llms import Ollama
 from langchain_community.vectorstores import Chroma
 from llama_parse import LlamaParse
 import nest_asyncio  # noqa: E402
@@ -71,6 +73,16 @@ def chunk_document(llama_docs):
     return docs
 
 
+custom_prompt_template = """Use the following pieces of information to answer the user's question.
+If you don't know the answer, just say that you don't know, don't try to make up an answer.
+
+Context: {context}
+Question: {question}
+
+Only return the helpful answer below and nothing else.
+Helpful answer:
+"""
+
 if __name__ == "__main__":
 
     if llamaparse_api_key is None:
@@ -80,6 +92,7 @@ if __name__ == "__main__":
         raise ValueError("GROQ_API_KEY not found in environment")
 
     # Parse DFTB+ manual with Llama parse
+    # Could also try pypdf
     dftb_output = Path("data/dftb_llama.pk")
 
     if dftb_output.is_file():
@@ -91,22 +104,63 @@ if __name__ == "__main__":
 
     docs = chunk_document(llama_docs)
 
+    start_time = time.time()
     embed_model = FastEmbedEmbeddings(model_name="BAAI/bge-base-en-v1.5")
+    end_time = time.time()
+    print("FastEmbedEmbeddings time (s)", end_time - start_time)
 
-    # Create a Chroma vector database from the chunked documents
-    vs = Chroma.from_documents(
-        documents=docs,
-        embedding=embed_model,
-        persist_directory="chroma_db_llamaparse1",  # Local mode with in-memory storage only
-        collection_name="rag"
-    )
+    start_time = time.time()
 
-    # TODO(Alex) Replace this step
-    # Creates a new ChatGroq object named chat_model
-    # Sets the temperature parameter to 0, indicating that the responses should be more predictable
-    # Sets the model_name parameter to “mixtral-8x7b-32768“, specifying the language model to use
+    vector_store = Path("chroma_db_llamaparse1")
+    if vector_store.is_dir():
+        print(f"Loading existing Chroma database from {vector_store.as_posix()}")
+        vs = Chroma(
+            persist_directory=vector_store.as_posix(),
+            collection_name="rag",
+            embedding_function=embed_model
+        )
+    else:
+        # Create a Chroma vector database from the chunked documents
+        vs = Chroma.from_documents(
+            documents=docs,
+            embedding=embed_model,
+            persist_directory="chroma_db_llamaparse1",  # Local mode with in-memory storage only
+            collection_name="rag"
+        )
+    end_time = time.time()
+    print("Chroma.from_documents time (s)", end_time - start_time)
 
-    # chat_model = ChatGroq(temperature=0,
-    #                       model_name="mixtral-8x7b-32768",
-    #                       api_key=userdata.get("GROQ_API_KEY")
-    #                       )
+    # Convert the vector store into a retriever object, which can be used to search for and retrieve vectors
+    # The k parameter determines how many documents to retrieve. Experiment with different values of k to see how
+    # it affects performance and accuracy. Try 1 - 3
+    start_time = time.time()
+    retriever = vs.as_retriever(search_kwargs={'k': 3})
+    end_time = time.time()
+    print("vs.as_retriever time (s)", end_time - start_time)
+
+    # Assuming Ollama is installed and have llama3 model pulled with `ollama pull llama3
+    start_time = time.time()
+    chat_model = Ollama(temperature=0, model="llama3")
+    end_time = time.time()
+    print("Initialising llama3 time (s)", end_time - start_time)
+
+    prompt = PromptTemplate(template=custom_prompt_template, input_variables=['context', 'question'])
+
+    # Instantiate the Retrieval Question Answering Chain
+    # NOTE, this is depreciated. Should replace as soon as the model works
+    # See https://api.python.langchain.com/en/latest/chains/langchain.chains.retrieval_qa.base.RetrievalQA.html
+    start_time = time.time()
+    qa = RetrievalQA.from_chain_type(llm=chat_model,
+                                     chain_type="stuff",
+                                     retriever=retriever,
+                                     return_source_documents=True,
+                                     chain_type_kwargs={"prompt": prompt})
+    end_time = time.time()
+    print("RetrievalQA.from_chain_type time (s)", end_time - start_time)
+
+    print("Just prior to querying")
+    response1 = qa.invoke({"query": "what version of DFTB+ is this manual for?"})
+    print(response1['result'])
+
+    response2 = qa.invoke({"query": "Write me Geometry and  LatticeVectors inputs for GaAs"})
+    print(response2['result'])
