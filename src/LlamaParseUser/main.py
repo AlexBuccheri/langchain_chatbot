@@ -4,6 +4,7 @@ import os
 import time
 from pathlib import Path
 
+import gradio as gr
 import joblib
 from langchain.chains import RetrievalQA
 from langchain.prompts import PromptTemplate
@@ -83,8 +84,12 @@ Only return the helpful answer below and nothing else.
 Helpful answer:
 """
 
-if __name__ == "__main__":
 
+def llama_dftb_chat_bot():
+    """
+
+    :return:
+    """
     if llamaparse_api_key is None:
         raise ValueError("LLAMA_CLOUD_API_KEY not found in environment")
 
@@ -124,7 +129,7 @@ if __name__ == "__main__":
         vs = Chroma.from_documents(
             documents=docs,
             embedding=embed_model,
-            persist_directory="chroma_db_llamaparse1",  # Local mode with in-memory storage only
+            persist_directory=vector_store.as_posix(),  # Local mode with in-memory storage only
             collection_name="rag"
         )
     end_time = time.time()
@@ -158,9 +163,42 @@ if __name__ == "__main__":
     end_time = time.time()
     print("RetrievalQA.from_chain_type time (s)", end_time - start_time)
 
-    print("Just prior to querying")
-    response1 = qa.invoke({"query": "what version of DFTB+ is this manual for?"})
-    print(response1['result'])
+    return qa
 
-    response2 = qa.invoke({"query": "Write me Geometry and  LatticeVectors inputs for GaAs"})
-    print(response2['result'])
+
+def query_chatbot_func_factory(qa):
+    """ Returns a function to query a chatbot
+    :return:
+    """
+    def query_func(query: str):
+        response = qa.invoke({"query": query})
+        return response['result']
+    return query_func
+
+
+if __name__ == "__main__":
+
+    qa = llama_dftb_chat_bot()
+
+    query_chatbot = query_chatbot_func_factory(qa)
+
+    print("Just prior to querying")
+
+    response = query_chatbot("what version of DFTB+ is this manual for?")
+    print(response)
+
+    response = query_chatbot("Write me Geometry and  LatticeVectors inputs for GaAs")
+    print(response)
+
+    # Basic interface for gradio
+    # To run in , run as `gradio src/LlamaParseUser/main.py`
+    # TODO How is this deployable if it's using llama locally, and the data is local?
+    # Ah, while the machine learning model and all computation continues to run locally on your computer
+    # => Could set this all up on my VM
+    demo = gr.Interface(
+        fn=query_chatbot,
+        inputs=["text"],
+        outputs=["text"],
+    )
+
+    demo.launch()
