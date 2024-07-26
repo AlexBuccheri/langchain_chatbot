@@ -14,10 +14,12 @@ TODO
 """
 from __future__ import annotations
 
+from contextlib import redirect_stdout
+import io
 import logging
 import os
 from pathlib import Path
-from typing import List
+from typing import List, Callable
 
 import joblib
 from langchain_core.documents import Document
@@ -33,6 +35,17 @@ from llama_parse import LlamaParse
 from qabot import LangchainMethods, RAGData, langchain_chatbot_factory
 
 
+def redirect_stdout_to_log(func: Callable) -> Callable:
+    def modified_func(*args, **kwargs):
+        new_stdout = io.StringIO()
+        with redirect_stdout(new_stdout):
+            return_data = func(*args, **kwargs)
+        captured_output = new_stdout.getvalue()
+        logger.info(f'Captured stdout: {captured_output}')
+        return return_data
+    return modified_func
+
+
 def parse_with_llamaparse(input: Path, output: Path, **kwargs):
     """
 
@@ -45,7 +58,7 @@ def parse_with_llamaparse(input: Path, output: Path, **kwargs):
     output = Path(output)
 
     if output.is_file():
-        print(f"Reading cached, parsed output from disk: {output.as_posix()}")
+        logger.info(f"Reading cached, parsed output from disk: {output.as_posix()}")
         return joblib.load(output)
 
     # Parse then cache
@@ -183,6 +196,8 @@ if __name__ == "__main__":
     # Chatbot to interaction with the DFTB+ manual
     initialise_logger()
 
+    # TODO Move lines 199 - 235 to yaml (see test/) and confirm
+    # !!python_function syntax works with pyyaml
     # Parser options
     parsing_instruction = """The provided document is a manual for using a density-functional tight-binding theory 
     code, DFTB+. This provides descriptions on all input variables, and valid input formats for the code.
@@ -208,8 +223,8 @@ if __name__ == "__main__":
     Helpful answer:
     """
 
-    settings = {'parser_input': Path('inputs/dftb_manual.pdf'),
-                'parser_output': Path('data/dftb_llama.pk'),
+    settings = {'parser_input': 'inputs/dftb_manual.pdf',
+                'parser_output': 'data/dftb_llama.pk',
                 'parser_options': llama_parse_opts,
                 'chunk_options': {'chunk_size': 2000, 'chunk_overlap': 100},
                 'embed_model_name': "BAAI/bge-base-en-v1.5",
@@ -228,7 +243,8 @@ if __name__ == "__main__":
             'parse_document': staticmethod(parse_with_llamaparse),
             'dump_parsed_document': staticmethod(dump_parsed_document),
             'chunk_document': staticmethod(chunk_document),
-            'embedding_model': staticmethod(lambda name: FastEmbedEmbeddings(model_name=name)),
+            'embedding_model': staticmethod(redirect_stdout_to_log(
+                lambda name: FastEmbedEmbeddings(model_name=name))),
             'vector_store_database': staticmethod(vector_store_database),
             'vector_store_to_retriever': staticmethod(lambda vs, **kwargs: vs.as_retriever(**kwargs)),
             'llm_model_constructor': staticmethod(lambda **kwargs: Ollama(**kwargs)),
