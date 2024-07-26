@@ -8,9 +8,13 @@ The correct way to split this is to implement free functions for each respective
 * etc
 
 But as a demo, all the free functions wrapper class, and settings are defined in one place.
+
+TODO
+* Add timing decorators that append info to the logger
 """
 from __future__ import annotations
 
+import logging
 import os
 from pathlib import Path
 from typing import List
@@ -78,9 +82,8 @@ def chunk_document(markdown_path, **kwargs) -> List[Document]:
     text_splitter = RecursiveCharacterTextSplitter(**kwargs)
     docs = text_splitter.split_documents(documents)
 
-    # TODO Change this to a logger
-    print(f"Number of documents loaded: {len(documents)}")
-    print(f"Total number of document chunks generated :{len(docs)}")
+    logger.info(f"Number of documents loaded: {len(documents)}")
+    logger.info(f"Total number of document chunks generated :{len(docs)}")
 
     return docs
 
@@ -101,12 +104,12 @@ def vector_store_database(vs_path, chunked_docs, embed_model: Embeddings, **kwar
         # Note, not sure if/why this is a different keyword for the constructor verse
         # from_documents method
         kwargs.update({'embedding_function': embed_model})
-        print(f"Loading existing Chroma database from {vs_path.as_posix()}")
+        logger.info(f"Loading existing Chroma database from {vs_path.as_posix()}")
         vs = Chroma(**kwargs)
     else:
         kwargs.update({'documents': chunked_docs,
                        'embedding': embed_model})
-        print(f"Generating Chroma database at {vs_path.as_posix()}")
+        logger.info(f"Generating Chroma database at {vs_path.as_posix()}")
         vs = Chroma.from_documents(**kwargs)
     return vs
 
@@ -148,9 +151,37 @@ def vector_store_database(vs_path, chunked_docs, embed_model: Embeddings, **kwar
 #                               )
 
 
+# Globally scoped logger
+logger = logging.getLogger('chatbot')
+
+
+def initialise_logger(level=logging.INFO):
+    """ Initialise global logger
+
+    :param level:
+    :return:
+    """
+    levels = [logging.CRITICAL, logging.FATAL, logging.ERROR, logging.WARNING,
+              logging.WARN, logging.INFO, logging.DEBUG, logging.NOTSET]
+
+    if level not in levels:
+        raise ValueError(f'Logging level invalid: {level}')
+
+    logger.setLevel(level)
+
+    formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+
+    # Create a console handler
+    console_handler = logging.StreamHandler()
+    console_handler.setLevel(level)
+    console_handler.setFormatter(formatter)
+    logger.addHandler(console_handler)
+
+
 if __name__ == "__main__":
 
     # Chatbot to interaction with the DFTB+ manual
+    initialise_logger()
 
     # Parser options
     parsing_instruction = """The provided document is a manual for using a density-functional tight-binding theory 
