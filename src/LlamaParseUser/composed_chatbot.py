@@ -111,44 +111,41 @@ def vector_store_database(vs_path, chunked_docs, embed_model: Embeddings, **kwar
     return vs
 
 
-# TODO(Alex)
-# Once it works, try using the type constructor to avoid
-# writing so much for PrototypeBotMethods
-class PrototypeBotMethods(LangchainMethods):
-
-    @staticmethod
-    def parse_document(input: Path, output: Path, **kwargs):
-        return parse_with_llamaparse(input, output, **kwargs)
-
-    @staticmethod
-    def dump_parsed_document(llama_docs, output_without_extension: Path):
-        return dump_parsed_document(llama_docs, output_without_extension)
-
-    @staticmethod
-    def chunk_document(file, **kwargs):
-        return chunk_document(file)
-
-    @staticmethod
-    def embedding_model(embed_model_name) -> Embeddings:
-        return FastEmbedEmbeddings(model_name=embed_model_name)
-
-    @staticmethod
-    def vector_store_database(vs_path, chunked_docs, embedding_model, **kwargs):
-        return vector_store_database(vs_path, chunked_docs, embedding_model, **kwargs)
-
-    @staticmethod
-    def vector_store_to_retriever(vs, **kwargs):
-        return vs.as_retriever(**kwargs)
-
-    @staticmethod
-    def llm_model_constructor(**kwargs):
-        return Ollama(**kwargs)
-
-    @staticmethod
-    def set_prompt_template(prompt_template: str) -> PromptTemplate:
-        return PromptTemplate(template=prompt_template,
-                              input_variables=['context', 'question']
-                              )
+# class PrototypeBotMethods(LangchainMethods):
+#
+#     @staticmethod
+#     def parse_document(input: Path, output: Path, **kwargs):
+#         return parse_with_llamaparse(input, output, **kwargs)
+#
+#     @staticmethod
+#     def dump_parsed_document(llama_docs, output_without_extension: Path):
+#         return dump_parsed_document(llama_docs, output_without_extension)
+#
+#     @staticmethod
+#     def chunk_document(file, **kwargs):
+#         return chunk_document(file)
+#
+#     @staticmethod
+#     def embedding_model(embed_model_name) -> Embeddings:
+#         return FastEmbedEmbeddings(model_name=embed_model_name)
+#
+#     @staticmethod
+#     def vector_store_database(vs_path, chunked_docs, embedding_model, **kwargs):
+#         return vector_store_database(vs_path, chunked_docs, embedding_model, **kwargs)
+#
+#     @staticmethod
+#     def vector_store_to_retriever(vs, **kwargs):
+#         return vs.as_retriever(**kwargs)
+#
+#     @staticmethod
+#     def llm_model_constructor(**kwargs):
+#         return Ollama(**kwargs)
+#
+#     @staticmethod
+#     def set_prompt_template(prompt_template: str) -> PromptTemplate:
+#         return PromptTemplate(template=prompt_template,
+#                               input_variables=['context', 'question']
+#                               )
 
 
 if __name__ == "__main__":
@@ -192,13 +189,33 @@ if __name__ == "__main__":
                 'prompt_template': prompt_template
                 }
 
+    # Use the type constructor to create the class
+    PrototypeBotMethods = type(
+        'PrototypeBotMethods',
+        (LangchainMethods,),
+        {
+            'parse_document': staticmethod(parse_with_llamaparse),
+            'dump_parsed_document': staticmethod(dump_parsed_document),
+            'chunk_document': staticmethod(chunk_document),
+            'embedding_model': staticmethod(lambda name: FastEmbedEmbeddings(model_name=name)),
+            'vector_store_database': staticmethod(vector_store_database),
+            'vector_store_to_retriever': staticmethod(lambda vs, **kwargs: vs.as_retriever(**kwargs)),
+            'llm_model_constructor': staticmethod(lambda **kwargs: Ollama(**kwargs)),
+            'set_prompt_template': staticmethod(lambda template:
+                                                PromptTemplate(template=template,
+                                                               input_variables=['context', 'question'])
+                                                ),
+        }
+    )
+
     chatbot = langchain_chatbot_factory(PrototypeBotMethods(), RAGData(**settings))
 
-    print("Just prior to querying")
+    print("Starting chatbot")
 
-    response = chatbot("what version of DFTB+ is this manual for?")
-    print(response)
+    questions = ["what version of DFTB+ is this manual for?",
+                 "Write me Geometry and  LatticeVectors inputs for GaAs"]
 
-    response = chatbot("Write me Geometry and  LatticeVectors inputs for GaAs")
-    print(response)
-
+    for question in questions:
+        print('Question: \n', question, '\n')
+        response = chatbot(question)
+        print('Response: \n', response, '\n')
