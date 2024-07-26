@@ -40,6 +40,10 @@ class RAGData:
 
     def __init__(self, **kwargs):
         self.__dict__.update(kwargs)
+        # Ensure all paths are of type Path
+        path_keys = ['parser_input', 'parser_output', 'vs_path']
+        for key in path_keys:
+            self.__dict__[key] = Path(self.__dict__[key])
 
 
 class LangchainMethods(ABC):
@@ -188,10 +192,9 @@ def langchain_chatbot_factory(lcm: LangchainMethods, data: RAGData) -> Callable[
     prompt = lcm.set_prompt_template(data.prompt_template)
 
     # Instantiate the Retrieval Question Answering Chain
-    # NOTE, this is depreciated. Should replace as soon as the model works
+    # NOTE, this is depreciated - should replace
     # See https://api.python.langchain.com/en/latest/chains/langchain.chains.retrieval_qa.base.RetrievalQA.html
     qa_chain = RetrievalQA.from_chain_type(llm=llm_model,
-                                           chain_type="stuff",  # TODO Change this
                                            retriever=retriever,
                                            return_source_documents=True,
                                            chain_type_kwargs={"prompt": prompt})
