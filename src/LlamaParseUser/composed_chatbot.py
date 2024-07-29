@@ -14,7 +14,7 @@ TODO
 """
 from __future__ import annotations
 
-from contextlib import redirect_stdout
+from contextlib import redirect_stdout, redirect_stderr
 import io
 import logging
 import os
@@ -37,15 +37,32 @@ from qabot import LangchainMethods, RAGData, langchain_chatbot_factory
 
 
 def redirect_stdout_to_log(func: Callable) -> Callable:
+    """
+    tqdm progress bar can write to stderr rather than stdout
+    hence capture both here.
+    :param func:
+    :return:
+    """
     def modified_func(*args, **kwargs):
         new_stdout = io.StringIO()
-        with redirect_stdout(new_stdout):
-            return_data = func(*args, **kwargs)
-        captured_output = new_stdout.getvalue()
-        logger.info(f'Captured stdout: {captured_output}')
-        return return_data
-    return modified_func
+        new_stderr = io.StringIO()
 
+        with redirect_stdout(new_stdout), redirect_stderr(new_stderr):
+            return_data = func(*args, **kwargs)
+
+        # Ensure any buffered content is flushed
+        new_stdout.flush()
+        new_stderr.flush()
+
+        captured_stdout = new_stdout.getvalue()
+        captured_stderr = new_stderr.getvalue()
+
+        logger.info(captured_stdout)
+        logger.info(captured_stderr)
+
+        return return_data
+
+    return modified_func
 
 def parse_with_llamaparse(input: Path, output: Path, **kwargs):
     """
@@ -132,45 +149,8 @@ def vector_store_database(vs_path, chunked_docs, embed_model: Embeddings, **kwar
     return vs
 
 
-# class PrototypeBotMethods(LangchainMethods):
-#
-#     @staticmethod
-#     def parse_document(input: Path, output: Path, **kwargs):
-#         return parse_with_llamaparse(input, output, **kwargs)
-#
-#     @staticmethod
-#     def dump_parsed_document(llama_docs, output_without_extension: Path):
-#         return dump_parsed_document(llama_docs, output_without_extension)
-#
-#     @staticmethod
-#     def chunk_document(file, **kwargs):
-#         return chunk_document(file)
-#
-#     @staticmethod
-#     def embedding_model(embed_model_name) -> Embeddings:
-#         return FastEmbedEmbeddings(model_name=embed_model_name)
-#
-#     @staticmethod
-#     def vector_store_database(vs_path, chunked_docs, embedding_model, **kwargs):
-#         return vector_store_database(vs_path, chunked_docs, embedding_model, **kwargs)
-#
-#     @staticmethod
-#     def vector_store_to_retriever(vs, **kwargs):
-#         return vs.as_retriever(**kwargs)
-#
-#     @staticmethod
-#     def llm_model_constructor(**kwargs):
-#         return Ollama(**kwargs)
-#
-#     @staticmethod
-#     def set_prompt_template(prompt_template: str) -> PromptTemplate:
-#         return PromptTemplate(template=prompt_template,
-#                               input_variables=['context', 'question']
-#                               )
-
-
 # Globally scoped logger
-logger = logging.getLogger('chatbot')
+logger = logging.getLogger(__name__)
 
 
 def initialise_logger(level=logging.INFO):
@@ -199,6 +179,7 @@ def initialise_logger(level=logging.INFO):
 if __name__ == "__main__":
 
     # Chatbot to interaction with the DFTB+ manual
+    # Pass logging.WARNING to supress info from stdout
     initialise_logger()
 
     # Parse options and configuration
