@@ -21,7 +21,6 @@ settings:
   parser_input: 'inputs/dftb_manual.pdf'
   parser_output: 'data/dftb_llama.pk'
   parser_options:
-    api_key: !!python/name:os.environ.get LLAMA_CLOUD_API_KEY  #check this works
     result_type: 'markdown'
     parsing_instruction: *parsing_instruction
     max_timeout: 5000

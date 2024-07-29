@@ -22,6 +22,7 @@ from pathlib import Path
 from typing import List, Callable
 
 import joblib
+import yaml
 from langchain_core.documents import Document
 from langchain_core.embeddings import Embeddings
 from langchain.text_splitter import RecursiveCharacterTextSplitter
@@ -56,6 +57,10 @@ def parse_with_llamaparse(input: Path, output: Path, **kwargs):
     """
     input = Path(input)
     output = Path(output)
+    kwargs['api_key'] = os.environ.get('LLAMA_CLOUD_API_KEY')
+
+    if kwargs['api_key'] is None:
+        raise EnvironmentError('LLAMA_CLOUD_API_KEY not defined as an ENV VAR')
 
     if output.is_file():
         logger.info(f"Reading cached, parsed output from disk: {output.as_posix()}")
@@ -196,44 +201,11 @@ if __name__ == "__main__":
     # Chatbot to interaction with the DFTB+ manual
     initialise_logger()
 
-    # TODO Move lines 199 - 235 to yaml (see test/) and confirm
-    # !!python_function syntax works with pyyaml
-    # Parser options
-    parsing_instruction = """The provided document is a manual for using a density-functional tight-binding theory 
-    code, DFTB+. This provides descriptions on all input variables, and valid input formats for the code.
-    It contains many tables, and the description of the custom structured data input format for DFTB+.
-    Try to be precise while answering the questions.
-    """
-
-    llama_parse_opts = {'api_key': os.environ.get('LLAMA_CLOUD_API_KEY'),
-                        'result_type': "markdown",
-                        'parsing_instruction': parsing_instruction,
-                        'max_timeout': 5000,
-                        'verbose': True
-                        }
-
-    # # This could be improved by using ollama-specific prompts
-    prompt_template = """Use the following pieces of information to answer the user's question.
-    If you don't know the answer, just say that you don't know, don't try to make up an answer.
-
-    Context: {context}
-    Question: {question}
-
-    Only return the helpful answer below and nothing else.
-    Helpful answer:
-    """
-
-    settings = {'parser_input': 'inputs/dftb_manual.pdf',
-                'parser_output': 'data/dftb_llama.pk',
-                'parser_options': llama_parse_opts,
-                'chunk_options': {'chunk_size': 2000, 'chunk_overlap': 100},
-                'embed_model_name': "BAAI/bge-base-en-v1.5",
-                'vs_path': "chroma_db_llamaparse1",
-                'vs_options': {},
-                'vs_retriever_options': {'search_kwargs': {'k': 3}},
-                'llm_options':  {'temperature': 1, 'model': "llama3"},
-                'prompt_template': prompt_template
-                }
+    # Parse options and configuration
+    project_root = Path(__file__).parents[2]
+    with open(project_root / 'tests/dftbplus.yml', 'r') as file:
+        config = yaml.safe_load(file)
+    settings = config['settings']
 
     # Use the type constructor to create the class
     PrototypeBotMethods = type(
