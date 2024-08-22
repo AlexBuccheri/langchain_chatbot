@@ -3,6 +3,7 @@
 import os
 import time
 from pathlib import Path
+from typing import List
 
 import gradio as gr
 import joblib
@@ -13,8 +14,11 @@ from langchain_community.document_loaders import DirectoryLoader, UnstructuredMa
 from langchain_community.embeddings.fastembed import FastEmbedEmbeddings
 from langchain_community.llms import Ollama
 from langchain_community.vectorstores import Chroma
+from llama_index.core.schema import Document as lammaDocument
 from llama_parse import LlamaParse
+
 import nest_asyncio  # noqa: E402
+
 
 # from groq import Groq
 # from langchain_groq import ChatGroq
@@ -25,6 +29,7 @@ import nest_asyncio  # noqa: E402
 # API keys
 llamaparse_api_key = os.environ.get('LLAMA_CLOUD_API_KEY')
 groq_api_key = os.environ.get("GROQ_API_KEY")
+root = Path("/Users/alexanderbuccheri/Codes/LlamaParseUser")
 
 
 def parse_dftb_with_llama():
@@ -47,24 +52,14 @@ def parse_dftb_with_llama():
     return llama_parse_documents
 
 
-def chunk_document(llama_docs):
+def chunk_document(llama_docs: List[lammaDocument]):
     """
-    Creates a vector database using document loaders.
     Load markdown and split into chunks
 
     :param llama_docs
     :return docs
     """
-    # API for langchain is such that one needs to pass it a file path
-    # rather than a stream of some sort
-    markdown_path = "data/output.md"
-    with open(markdown_path, 'w') as f:
-        for doc in llama_docs:
-            f.write(doc.text + '\n')
-
-    # Implicitly depends on unstructured package
-    loader = UnstructuredMarkdownLoader(markdown_path)
-    documents = loader.load()
+    documents = [doc.to_langchain_format() for doc in llama_docs]
     text_splitter = RecursiveCharacterTextSplitter(chunk_size=2000, chunk_overlap=100)
     docs = text_splitter.split_documents(documents)
 
@@ -98,7 +93,7 @@ def llama_dftb_chat_bot():
 
     # Parse DFTB+ manual with Llama parse
     # Could also try pypdf
-    dftb_output = Path("data/dftb_llama.pk")
+    dftb_output = root / "data/dftb_llama.pk"
 
     if dftb_output.is_file():
         print(f"Reading already-parsed file from disk: {dftb_output.as_posix()}")
@@ -116,7 +111,7 @@ def llama_dftb_chat_bot():
 
     start_time = time.time()
 
-    vector_store = Path("chroma_db_llamaparse1")
+    vector_store = root / "chroma_db_llamaparse1"
     if vector_store.is_dir():
         print(f"Loading existing Chroma database from {vector_store.as_posix()}")
         vs = Chroma(
@@ -192,7 +187,6 @@ if __name__ == "__main__":
 
     # Basic interface for gradio
     # To run in , run as `gradio src/LlamaParseUser/main.py`
-    # TODO How is this deployable if it's using llama locally, and the data is local?
     # Ah, while the machine learning model and all computation continues to run locally on your computer
     # => Could set this all up on my VM
     demo = gr.Interface(
