@@ -55,14 +55,14 @@ def langchain_chatbot_factory(vs, chat_model) -> Callable[[str], str]:
     Helpful answer:
     """
 
-    retriever = vs.as_retriever(search_kwargs={'k': 3})
+    retriever = vs.as_retriever(search_kwargs={'k': 1})
 
     prompt = PromptTemplate(template=custom_prompt_template, input_variables=['context', 'question'])
 
     qa = RetrievalQA.from_chain_type(llm=chat_model,
                                      chain_type="stuff",
                                      retriever=retriever,
-                                     return_source_documents=True,
+                                     return_source_documents=False,  # Reference where responses obtained from
                                      chain_type_kwargs={"prompt": prompt})
 
     return lambda query: qa.invoke({"query": query})
@@ -152,13 +152,6 @@ def retrive_url(id: str):
 
 if __name__ == "__main__":
 
-    todos = """    
-    1. Make the vector store extendable, then can sequentially add to it
-    2. Change chatbot backend to GPT 3.5, or better
-        3. Test this by parsing a subset of Octopus webpages and see how it performs
-    - Alternatively, look at a more efficient way of parsing the raw data
-    - Should be possible as I have all of it
-    """
     # Parse Octopus webpages
     # with open(root / 'oct_webpages.txt', 'rb') as fid:
     #     urls = pickle.load(fid)
@@ -194,15 +187,14 @@ if __name__ == "__main__":
         id_counters[source] += 1
 
     # Create or load the vector store
-    print('Creating vector store')
     # Docs say  parallel=0, batch_size=512 are valid, but they're not in the code
     # https://api.python.langchain.com/en/latest/embeddings/langchain_community.embeddings.fastembed.FastEmbedEmbeddings.html
-    # TODO(Alex) Switch to fast embedding
     # Switched to faster model: https://qdrant.github.io/fastembed/examples/Supported_Models/
-    # but would need to rebuild the db: "BAAI/bge-small-en-v1.5
-    embed_model = FastEmbedEmbeddings(model_name="BAAI/bge-base-en-v1.5", threads=8)
+    # but needed to rebuild the db: "BAAI/bge-small-en-v1.5
+    embed_model = FastEmbedEmbeddings(model_name="BAAI/bge-small-en-v1.5", threads=8)
     vs_name = root / "chroma_db_octopus"
 
+    start_time = time.time()
     # Note, could host the vectorstore elsewhere
     if add_docs:
         # Should check how new indices are generated when extending a store
@@ -221,7 +213,6 @@ if __name__ == "__main__":
         batches[-1] = (batches[-1][0], len(ids))
 
         # TODO(Alex) Should distribute the batches
-        start_time = time.time()
         for i1, i2 in batches:
 
             print(f'Embedding text for batch {i1}:{i2}')
@@ -256,25 +247,8 @@ if __name__ == "__main__":
         # This makes it at best slow, or just fail if the number of docs exceeds 5461
         # This above should be added as a new method in the Chroma class
         # vs.add_documents(chunked_documents)
-        end_time = time.time()
     else:
         print("Creating an Octopus vectorstore")
         vs = get_or_create_chroma_vectorstore(vs_name, embed_model, chunked_documents)
+    end_time = time.time()
     print("Chroma.from_documents time (s)", end_time - start_time)
-
-    # TODO Swap this for connection to GPT3.5
-    # chat_model = Ollama(temperature=0, model="llama3")
-    #
-    # chatbot = langchain_chatbot_factory(vs, chat_model)
-    #
-    # # Should run this in Jupyter
-    # print("Starting chatbot")
-    #
-    # questions = ["what is the latest version of Octopus?",
-    #              "What does Octopus do?"]
-    #
-    # for question in questions:
-    #     print('Question: \n', question, '\n')
-    #     response = chatbot(question)
-    #     # Can also query 'source_documents' to get where this info came from
-    #     print('Response: \n', response['result'], '\n')
