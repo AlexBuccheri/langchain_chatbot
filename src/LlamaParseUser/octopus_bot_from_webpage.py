@@ -1,32 +1,31 @@
 """ Parse the Octopus documentation from its online website
 and create a RAG layer
+
+Notes on embedding vectors with langchain:
+
+* Fast embedding documentation says parallel=0 and batch_size=512 are valid,
+  but they're not accepted by the langhcain wrapper class
+  - https://api.python.langchain.com/en/latest/embeddings/langchain_community.embeddings.fastembed.FastEmbedEmbeddings.html
+
+* Switched to faster model: https://qdrant.github.io/fastembed/examples/Supported_Models/
+  but needed to rebuild the db: "BAAI/bge-small-en-v1.5
+
 """
+from pathlib import Path
 import pickle
 import time
-from pathlib import Path
 from typing import Callable, List, Tuple
 
-# from mpi4py import MPI
-
-
 import chromadb
-import numpy as np
-import pyshorteners
-import requests
-from chromadb.utils.batch_utils import create_batches_for_chroma
-
 from langchain_community.embeddings.fastembed import FastEmbedEmbeddings
 from langchain_community.vectorstores import Chroma
-from langchain_community.llms import Ollama
-
 from langchain.chains import RetrievalQA
-from langchain.prompts import PromptTemplate
 from langchain_core.documents.base import Document as LCDocument
+from langchain.prompts import PromptTemplate
 from langchain.text_splitter import RecursiveCharacterTextSplitter
-
-from tqdm import tqdm
 from unstructured.partition.html import partition_html
 
+# Required once, to get dependencies for partition_html
 # import nltk
 # import ssl
 # try:
@@ -38,7 +37,7 @@ from unstructured.partition.html import partition_html
 #
 # nltk.download()
 
-
+# Dirty, hard-coded project root
 root = Path("/Users/alexanderbuccheri/Codes/LlamaParseUser")
 
 
@@ -81,7 +80,7 @@ def get_or_create_chroma_vectorstore(db_path: Path, embed_model, docs=None):
 
         print(f"Loading existing Chroma database from {db_path.as_posix()}")
 
-        # This is horrifically slow
+        # This is slow because of the interbal call to construct embedding vectors
         # vs = Chroma(
         #     persist_directory=db_path.as_posix(),
         #     collection_name="octopus_rag",
@@ -107,15 +106,84 @@ def get_or_create_chroma_vectorstore(db_path: Path, embed_model, docs=None):
     return vs
 
 
-# No point doing this, as this breaks the rest of the workflow - would need to repackage the database
-# using langhchain's Chroma
-# client_settings = chromadb.config.Settings(is_persistent=True)
-# client = chromadb.Client(client_settings)
-# # No idea how to supply embedding to it, from langchain
-# collection = client.get_or_create_collection(name="octopus_rag")
-# collection.add(texts = [doc.page_content for doc in documents],
-#                metadatas = [doc.metadata for doc in documents],
-#                ids=[f"id{i}" for i in range(len(metadatas)])
+def add_to_chroma_vectorstore(chunked_documents: List[LCDocument], vs: Chroma, max_batch_size=5000):
+    """ Add entries to an existing vector store.
+
+    This batches a call to chroma's upsert.
+    If the id is already present, it will get replaced.
+
+    Written my own batched function because langchain_community.vectorstores.chromo.Chroma
+    does not wrap the full functionality of chroma DB:
+
+        * from_documents is a light wrapper over from_texts, which creates a Chroma instance
+          - I **think** this should only be used for new Chroma instances
+        * from_texts also creates a new Chroma instance, and has a batched call to add_texts
+        * add_texts calls upsert
+        * However, do any of these calls work on adding documents to an existing database?
+
+        * update_documents is batched, but calls update in the generic parent class. Assuming this wraps
+          chroma's update, an error will be logged and the update will be ignored if an
+          id is not found in the collection.
+
+        * add_documents is defined in the VectorStore base class of Chroma, and this has no batching
+         (as it obviously does not know about chroma at this level), **suggesting** there's no add_documents
+         method
+
+        So it's not clear to me that a batched call to upsert can be made on an existing collection.
+        Langchain's API wrapping is quite opaque.
+
+    Computing the embedding vectors is definitely the bottleneck, and is why it **looks** like
+    chroma is slow. It's not, it's that Chroma hides/include the call to evaluating the
+    embedding vectors to pass to the store. Hence, another reason for exposing the calls
+
+    How I would distribute computing the embedding vectors with MPI4PY. In the batched loop below
+    add:
+
+    ```python
+    for i1, i2 in batches:
+        batched_texts = texts[i1:i2]
+        ev_batches = distribute_loop_mpi(i1, i2, n_processes)
+        j1, j2 = ev_batches[rank]
+        local_embeddings = vs._embedding_function.embed_documents(batched_texts[j1: j2])
+        embeddings = sum(comm.allgather(local_embeddings), [])
+   ```
+    One could instead just distribute the batches over MPI processes, so each one does
+    len(batches) / n_processes but this will mean batches that are small for chroma.
+
+    :param vs: Chroma vectorstore to add or modify documents in
+    :param max_batch_size: Max batch size for chroma, which should not exceed ~5400
+    else an exception is raised
+    :return:
+    """
+    assert max_batch_size < 5400, 'Chroma does not accept batches >~ 5400'
+    print("Extending the Octopus vectorstore")
+
+    # Adapted from the `update_documents` method of Chroma class in langchain
+    texts = [doc.page_content for doc in chunked_documents]
+    metadatas = [doc.metadata for doc in chunked_documents]
+
+    # Create batches for chroma DB
+    # Adapted from from chromadb.utils.batch_utils import create_batches
+    # Cleaner to return the indices, than a bunch of optionally-filled tuples
+    batches = batch_loop(len(ids), max_batch_size)
+
+    for i1, i2 in batches:
+        print(f'Embedding text for batch {i1}:{i2}')
+
+        start_time_em = time.time()
+        embeddings = vs._embedding_function.embed_documents(texts[i1:i2])
+        end_time_em = time.time()
+        print("Embedding time", end_time_em - start_time_em)
+
+        vs._collection.upsert(
+            ids=ids[i1:i2],
+            embeddings=embeddings,
+            metadatas=metadatas[i1:i2],
+            documents=texts[i1:i2]
+        )
+
+    return
+
 
 
 def parse_documents_from_urls(urls: list) -> List[LCDocument]:
@@ -132,26 +200,6 @@ def parse_documents_from_urls(urls: list) -> List[LCDocument]:
             print(f'Skipping {url}')
 
     return documents
-
-
-# This is really slow - need a better option... maybe just the url + chunk
-url_shortner = pyshorteners.Shortener()
-
-
-def unique_id_from_webpage(url: str) -> str:
-    # Drop the https://tinyurl.com/
-    short_url = url_shortner.tinyurl.short(url)[20:]
-    return short_url
-
-
-# This is super-annoying, but assume it won't be used often, or I can rebuild with other ids
-def retrive_url(id: str):
-    short_url, chunk = id.split('-')
-    try:
-        response = requests.head("https://tinyurl.com/" + short_url, allow_redirects=True)
-        return response.url
-    except requests.RequestException as e:
-        raise requests.RequestException(f"An error occurred: {e}")
 
 
 def batch_loop(n: int, batch_size: int) -> List[Tuple[int, int]]:
@@ -187,17 +235,14 @@ if __name__ == "__main__":
     #     urls = pickle.load(fid)
     # urls = sorted(list(urls))
 
+    # Load urls
     with open(root / 'inputs/octopus_urls', 'r') as fid:
         urls = fid.read().strip().split('\n')
     print(f'{len(urls)} unique Octopus urls')
 
+    # Not a problem if this is true - will replace any existing db entries
     add_docs = True
-    url_start, url_end = 10, 12
-    max_batch_size = 5000
-
-    # Idea is to hash the website name, then append with -chunk
-    # where chunk is the ith chunk
-    id_counters = {url: 0 for url in urls[url_start:url_end]}
+    url_start, url_end = 12, 1000
 
     # Parse
     documents = parse_documents_from_urls(urls[url_start:url_end])
@@ -209,7 +254,10 @@ if __name__ == "__main__":
     print(f"Number of documents loaded: {len(documents)}")
     print(f"Total number of document chunks generated :{len(chunked_documents)}")
 
-    # Not using unique_id_from_webpage, as it's too slow
+    # Use the website name appended with -chunk, as the idea,
+    # where chunk is the ith chunk
+    # Not using `unique_id_from_webpage`, as it's too slow
+    id_counters = {url: 0 for url in urls[url_start:url_end]}
     ids = []
     for doc in chunked_documents:
         source = doc.metadata['source']
@@ -217,73 +265,14 @@ if __name__ == "__main__":
         id_counters[source] += 1
 
     # Create or load the vector store
-    # Docs say  parallel=0, batch_size=512 are valid, but they're not in the code
-    # https://api.python.langchain.com/en/latest/embeddings/langchain_community.embeddings.fastembed.FastEmbedEmbeddings.html
-    # Switched to faster model: https://qdrant.github.io/fastembed/examples/Supported_Models/
-    # but needed to rebuild the db: "BAAI/bge-small-en-v1.5
-    embed_model = FastEmbedEmbeddings(model_name="BAAI/bge-small-en-v1.5", threads=8)
+    # Note, could host the vectorstore on a server
     vs_name = root / "chroma_db_octopus"
+    embed_model = FastEmbedEmbeddings(model_name="BAAI/bge-small-en-v1.5", threads=8)
 
     start_time = time.time()
-    # Note, could host the vectorstore elsewhere
     if add_docs:
-        # Should check how new indices are generated when extending a store
-        print("Extending the Octopus vectorstore")
         vs = get_or_create_chroma_vectorstore(vs_name, embed_model)
-
-        # Adapted from the `update_documents` method of Chroma class in langchain
-        print('Repackaging new langchain Documents')
-        texts = [doc.page_content for doc in chunked_documents]
-        metadatas = [doc.metadata for doc in chunked_documents]
-
-        # Create batches for chroma DB
-        batches = batch_loop(len(ids), max_batch_size)
-        n_processes = 4
-
-        for i1, i2 in batches:
-
-
-            print(f'Embedding text for batch {i1}:{i2}')
-
-            # How I would distribute computing the embedding vectors
-            # batched_texts = texts[i1:i2]
-            # ev_batches = distribute_loop_mpi(i1, i2, n_processes)
-            # j1, j2 = ev_batches[rank]
-            # local_embeddings = vs._embedding_function.embed_documents(batched_texts[j1: j2])
-            # embeddings = sum(comm.allgather(local_embeddings), [])
-            # One could instead just distribute the batches over MPI processes, so each one does
-            # len(batches) / n_processes but this will mean batches that are small for chroma
-
-            start_time_em = time.time()
-            embeddings = vs._embedding_function.embed_documents(texts[i1:i2])
-            end_time_em = time.time()
-            print("Embedding time", end_time_em - start_time_em)
-
-            vs._collection.upsert(
-                ids=ids[i1:i2],
-                embeddings=embeddings,
-                metadatas=metadatas[i1:i2],
-                documents=texts[i1:i2]
-            )
-
-        # for batch in tqdm(create_batches_for_chroma(
-        #         api=vs._collection._client,
-        #         ids=ids,
-        #         metadatas=metadatas,
-        #         documents=texts,
-        #         embeddings=embeddings
-        # )):
-        #     vs._collection.upsert(
-        #         ids=batch[0],
-        #         embeddings=batch[1],
-        #         metadatas=batch[2],
-        #         documents=batch[3]
-        #     )
-
-        # add_documents ultimately wraps `upsert`, with no batching - as defined in a base class
-        # This makes it at best slow, or just fail if the number of docs exceeds 5461
-        # This above should be added as a new method in the Chroma class
-        # vs.add_documents(chunked_documents)
+        add_to_chroma_vectorstore(chunked_documents, vs, max_batch_size=5000)
     else:
         print("Creating an Octopus vectorstore")
         vs = get_or_create_chroma_vectorstore(vs_name, embed_model, chunked_documents)
