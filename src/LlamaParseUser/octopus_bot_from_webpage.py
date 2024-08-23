@@ -17,11 +17,18 @@ import time
 from typing import Callable, List, Tuple
 
 import chromadb
+from langchain import hub
 from langchain_community.embeddings.fastembed import FastEmbedEmbeddings
+from langchain_community.llms.ollama import Ollama
 from langchain_community.vectorstores import Chroma
 from langchain.chains import RetrievalQA
 from langchain_core.documents.base import Document as LCDocument
+from langchain_core.output_parsers import StrOutputParser
+from langchain_core.prompts.chat import ChatPromptTemplate
+from langchain_core.prompts import HumanMessagePromptTemplate
+from langchain_core.runnables import RunnablePassthrough
 from langchain.prompts import PromptTemplate
+
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 from unstructured.partition.html import partition_html
 
@@ -41,7 +48,7 @@ from unstructured.partition.html import partition_html
 root = Path("/Users/alexanderbuccheri/Codes/LlamaParseUser")
 
 
-def langchain_chatbot_factory(vs, chat_model) -> Callable[[str], str]:
+def depreciated_langchain_chatbot_factory(vs, chat_model) -> Callable[[str], str]:
     """
 
     :param vs:
@@ -69,6 +76,45 @@ def langchain_chatbot_factory(vs, chat_model) -> Callable[[str], str]:
                                      chain_type_kwargs={"prompt": prompt})
 
     return lambda query: qa.invoke({"query": query})
+
+
+def langchain_chatbot_factory(vs, llm) -> Callable[[str], str]:
+    """
+    https://python.langchain.com/v0.2/docs/versions/migrating_chains/retrieval_qa/
+
+    The prompt can be pulled from  https://smith.langchain.com/hub/rlm/rag-prompt
+    however I construct manually.
+
+    :param vs:
+    :param llm:
+    :return:
+    """
+    # prompt = hub.pull("rlm/rag-prompt")
+    template = PromptTemplate(input_variables=['context', 'question'],
+                              template="You are an assistant for question-answering tasks. "
+                                       "Use the following pieces of retrieved context to answer the question. "
+                                       "If you don't know the answer, just say that you don't know. "
+                                       "Keep the answer concise where possible.\n"
+                                       "Question: {question} \nContext: {context} \nAnswer:"
+                              )
+
+    prompt = ChatPromptTemplate(input_variables=['context', 'question'],
+                                messages=[HumanMessagePromptTemplate(prompt=template)]
+                                )
+
+    def format_docs(docs):
+        return "\n\n".join(doc.page_content for doc in docs)
+
+    qa_chain = (
+            {"context": vs.as_retriever() | format_docs,
+             "question": RunnablePassthrough()
+            }
+            | prompt
+            | llm
+            | StrOutputParser()
+    )
+
+    return lambda query: qa_chain.invoke({"query": query})
 
 
 def get_or_create_chroma_vectorstore(db_path: Path, embed_model, docs=None):
@@ -185,7 +231,6 @@ def add_to_chroma_vectorstore(chunked_documents: List[LCDocument], vs: Chroma, m
     return
 
 
-
 def parse_documents_from_urls(urls: list) -> List[LCDocument]:
     print('Parsing')
     documents = []
@@ -210,8 +255,7 @@ def batch_loop(n: int, batch_size: int) -> List[Tuple[int, int]]:
     return batches
 
 
-def distribute_loop_mpi(i1:int, i2:int, n_processes:int) -> List[Tuple[int, int]]:
-
+def distribute_loop_mpi(i1: int, i2: int, n_processes: int) -> List[Tuple[int, int]]:
     dx = int((i2 - i1) / n_processes)
     remainder = (i2 - i1) % n_processes
 
@@ -240,9 +284,10 @@ if __name__ == "__main__":
         urls = fid.read().strip().split('\n')
     print(f'{len(urls)} unique Octopus urls')
 
+    # Took an hour to do 12, 1000. 1000 entries is ~ 1 GB
     # Not a problem if this is true - will replace any existing db entries
     add_docs = True
-    url_start, url_end = 12, 1000
+    url_start, url_end = 2000, 2001
 
     # Parse
     documents = parse_documents_from_urls(urls[url_start:url_end])
