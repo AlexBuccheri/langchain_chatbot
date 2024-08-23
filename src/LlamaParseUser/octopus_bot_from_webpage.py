@@ -4,9 +4,13 @@ and create a RAG layer
 import pickle
 import time
 from pathlib import Path
-from typing import Callable, List
+from typing import Callable, List, Tuple
+
+# from mpi4py import MPI
+
 
 import chromadb
+import numpy as np
 import pyshorteners
 import requests
 from chromadb.utils.batch_utils import create_batches_for_chroma
@@ -147,7 +151,33 @@ def retrive_url(id: str):
         response = requests.head("https://tinyurl.com/" + short_url, allow_redirects=True)
         return response.url
     except requests.RequestException as e:
-        raise requests.RequestException (f"An error occurred: {e}")
+        raise requests.RequestException(f"An error occurred: {e}")
+
+
+def batch_loop(n: int, batch_size: int) -> List[Tuple[int, int]]:
+    batches = []
+    for i in range(0, n, batch_size):
+        batches.append((i, i + batch_size))
+    batches[-1] = (batches[-1][0], n)
+    return batches
+
+
+def distribute_loop_mpi(i1:int, i2:int, n_processes:int) -> List[Tuple[int, int]]:
+
+    dx = int((i2 - i1) / n_processes)
+    remainder = (i2 - i1) % n_processes
+
+    mpi_batch = [(0, dx + remainder)]
+    remainder -= 1
+
+    for j in range(1, n_processes):
+        start = mpi_batch[-1][1]
+        end = start + dx + remainder
+        mpi_batch.append((start, end))
+        if remainder > 0:
+            remainder -= 1
+
+    return mpi_batch
 
 
 if __name__ == "__main__":
@@ -162,12 +192,12 @@ if __name__ == "__main__":
     print(f'{len(urls)} unique Octopus urls')
 
     add_docs = True
-    url_start, url_end = 5, 10
+    url_start, url_end = 10, 12
     max_batch_size = 5000
 
     # Idea is to hash the website name, then append with -chunk
     # where chunk is the ith chunk
-    id_counters = {url:0 for url in urls[url_start:url_end]}
+    id_counters = {url: 0 for url in urls[url_start:url_end]}
 
     # Parse
     documents = parse_documents_from_urls(urls[url_start:url_end])
@@ -206,27 +236,35 @@ if __name__ == "__main__":
         texts = [doc.page_content for doc in chunked_documents]
         metadatas = [doc.metadata for doc in chunked_documents]
 
-        # Create batches
-        batches = []
-        for i in range(0, len(ids), max_batch_size):
-            batches.append((i, i + max_batch_size))
-        batches[-1] = (batches[-1][0], len(ids))
+        # Create batches for chroma DB
+        batches = batch_loop(len(ids), max_batch_size)
+        n_processes = 4
 
-        # TODO(Alex) Should distribute the batches
         for i1, i2 in batches:
 
+
             print(f'Embedding text for batch {i1}:{i2}')
+
+            # How I would distribute computing the embedding vectors
+            # batched_texts = texts[i1:i2]
+            # ev_batches = distribute_loop_mpi(i1, i2, n_processes)
+            # j1, j2 = ev_batches[rank]
+            # local_embeddings = vs._embedding_function.embed_documents(batched_texts[j1: j2])
+            # embeddings = sum(comm.allgather(local_embeddings), [])
+            # One could instead just distribute the batches over MPI processes, so each one does
+            # len(batches) / n_processes but this will mean batches that are small for chroma
+
             start_time_em = time.time()
-            embeddings = vs._embedding_function.embed_documents(texts[i1:i2], )
+            embeddings = vs._embedding_function.embed_documents(texts[i1:i2])
             end_time_em = time.time()
             print("Embedding time", end_time_em - start_time_em)
 
             vs._collection.upsert(
-                    ids=ids[i1:i2],
-                    embeddings=embeddings,
-                    metadatas=metadatas[i1:i2],
-                    documents=texts[i1:i2]
-                )
+                ids=ids[i1:i2],
+                embeddings=embeddings,
+                metadatas=metadatas[i1:i2],
+                documents=texts[i1:i2]
+            )
 
         # for batch in tqdm(create_batches_for_chroma(
         #         api=vs._collection._client,
@@ -241,7 +279,6 @@ if __name__ == "__main__":
         #         metadatas=batch[2],
         #         documents=batch[3]
         #     )
-
 
         # add_documents ultimately wraps `upsert`, with no batching - as defined in a base class
         # This makes it at best slow, or just fail if the number of docs exceeds 5461
